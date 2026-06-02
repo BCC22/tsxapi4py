@@ -124,32 +124,32 @@ class HistoricalBarsResponse(BaseResponseModel):
 
 
 # --- Order Models ---
-# ORDER_TYPES_MAP: 1=LIMIT, 2=MARKET, 3=STOP (Stop Market)
+# ORDER_TYPES_MAP: 1=LIMIT, 2=MARKET, 4=STOP, 5=TRAILING_STOP
 # ORDER_SIDES_MAP: 0=BUY, 1=SELL
 
 class OrderBase(BaseRequestModel):
     account_id: int = Field(..., alias="accountId")
     contract_id: str = Field(..., alias="contractId")
-    type: int # Actual order type code
+    type: int
     side: int # 0 for Buy, 1 for Sell
     size: int = Field(gt=0) 
     custom_tag: Optional[str] = Field(None, alias="customTag")
     linked_order_id: Optional[int] = Field(None, alias="linkedOrderld") # Alias for 'linkedOrderId'
 
 class PlaceMarketOrderRequest(OrderBase):
-    type: Literal[2] = 2 # Market order type is 2
+    type: Literal[2] = 2
 
 class PlaceLimitOrderRequest(OrderBase):
-    type: Literal[1] = 1 # Limit order type is 1
+    type: Literal[1] = 1
     limit_price: float = Field(..., alias="limitPrice", gt=0)
 
-class PlaceStopOrderRequest(OrderBase): # Assuming this is Stop Market
-    type: Literal[3] = 3 # Stop order type is 3 (assuming Stop Market)
+class PlaceStopOrderRequest(OrderBase):  # TopstepX API: 4=Stop (3 is invalid)
+    type: Literal[4] = 4
     stop_price: float = Field(..., alias="stopPrice", gt=0)
 
 # If TRAILING_STOP is type 5, and you want to support it directly:
 class PlaceTrailingStopOrderRequest(OrderBase):
-    type: Literal[5] = 5 # Trailing Stop order type is 5
+    type: Literal[5] = 5
     trail_price: float = Field(..., alias="trailPrice", gt=0) # Or trailOffset, check API docs carefully
 
 class OrderPlacementResponse(BaseResponseModel):

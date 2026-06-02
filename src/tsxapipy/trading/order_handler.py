@@ -14,13 +14,13 @@ from tsxapipy.common.time_utils import UTC_TZ
 
 logger = logging.getLogger(__name__)
 
-# --- Standardized Order Type and Side Mappings (from API docs page 5 & 15) ---
+# --- Standardized Order Type and Side Mappings (TopstepX API: 1=Limit, 2=Market, 4=Stop, 5=TrailingStop) ---
 ORDER_TYPES_MAP: Dict[str, int] = {
     "LIMIT": 1,
     "MARKET": 2,
-    "STOP": 3, # Stop Market (API type 3 appears to be Stop Market based on common usage)
-    # API Docs also mention: TRAILING_STOP: 5, JOIN_BID: 6, JOIN_ASK: 7
-    # To support these, add them to the map and create specific placer methods if desired.
+    "STOP": 4,  # Stop Market; API uses 4 (value 3 is invalid)
+    "TRAILING_STOP": 5,
+    # JOIN_BID: 6, JOIN_ASK: 7
 }
 """Maps user-friendly order type strings (e.g., "MARKET") to API integer codes."""
 
@@ -114,11 +114,10 @@ class OrderPlacer:
                 if stop_price is None or not isinstance(stop_price, (int,float)) or stop_price <=0:
                     raise ValueError("Stop price must be a positive number for STOP orders.")
                 request_model_instance = schemas.PlaceStopOrderRequest(**common_params_cleaned, stopPrice=stop_price)
-            # Example for TRAILING_STOP if schema is defined
-            # elif order_type_str.upper() == "TRAILING_STOP":
-            #     if trail_price is None or not isinstance(trail_price, (int, float)) or trail_price <= 0:
-            #         raise ValueError("Trail price must be a positive number for TRAILING_STOP orders.")
-            #     request_model_instance = schemas.PlaceTrailingStopOrderRequest(**common_params_cleaned, trailPrice=trail_price) # Assuming schema exists
+            elif order_type_str.upper() == "TRAILING_STOP":
+                if trail_price is None or not isinstance(trail_price, (int, float)) or trail_price <= 0:
+                    raise ValueError("Trail price must be a positive number for TRAILING_STOP orders.")
+                request_model_instance = schemas.PlaceTrailingStopOrderRequest(**common_params_cleaned, trailPrice=trail_price)
             else:
                 logger.warning(f"Creating generic OrderBase for order type '{order_type_str}'. Specific model preferred.")
                 if limit_price is not None: common_params_cleaned['limitPrice'] = limit_price
@@ -165,7 +164,7 @@ class OrderPlacer:
                 return None
         except ValueError as ve: 
             logger.error(f"[ORDER PREPARATION ERROR] For {side} {order_type} order for {target_contract_id}: {ve}")
-            return None 
+            raise 
         except ValidationError as pydantic_val_err: # CORRECTED: Now catches Pydantic's ValidationError
             logger.error(f"[ORDER PREPARATION VALIDATION ERROR] For {side} {order_type} order for {target_contract_id}: {pydantic_val_err}")
             return None
@@ -208,12 +207,12 @@ class OrderPlacer:
                                 contract_id: Optional[str] = None,
                                 custom_tag: Optional[str] = None, 
                                 linked_order_id: Optional[int] = None) -> Optional[int]:
-        """Places a stop market order (API order type 3).
+        """Places a stop market order (API order type 4).
         (Docstring as provided)
         """
         if not isinstance(stop_price, (int, float)) or stop_price <= 0:
             logger.error(f"Invalid stop_price for stop market order: {stop_price}. Must be positive.")
-            return None
+            raise ValueError("Stop price must be a positive number for STOP orders.")
         return self.place_order(contract_id=contract_id, order_type="STOP", 
                                 side=side, size=size, stop_price=stop_price,
                                 custom_tag=custom_tag, linked_order_id=linked_order_id)

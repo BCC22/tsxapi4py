@@ -521,9 +521,21 @@ class APIClient:
     def place_order(self, order_payload_model: schemas.OrderBase) -> schemas.OrderPlacementResponse:
         if not isinstance(order_payload_model, schemas.OrderBase):
             raise TypeError("place_order expects a Pydantic OrderBase derived model instance.")
-        response_dict: Optional[Dict[str,Any]] = None
+        response_dict: Optional[Dict[str, Any]] = None
         try:
             payload_dict = order_payload_model.model_dump(by_alias=True, exclude_none=True)
+            # ProjectX Order/place expects "type"; never substitute a safer-looking default.
+            order_type_code = payload_dict.get("type")
+            if order_type_code is None and "orderType" in payload_dict:
+                order_type_code = payload_dict["orderType"]
+            if type(order_type_code) is not int:
+                raise InvalidParameterError("Order payload requires integer field 'type'.")
+            if order_type_code not in {1, 2, 4, 5, 6, 7}:
+                raise InvalidParameterError(
+                    f"Unsupported ProjectX Order/place type: {order_type_code}."
+                )
+            payload_dict["type"] = order_type_code
+            payload_dict.pop("orderType", None)
             response_dict = self._post_request("/api/Order/place", payload_dict)
             return schemas.OrderPlacementResponse.model_validate(response_dict)
         except ValidationError as e_val:
