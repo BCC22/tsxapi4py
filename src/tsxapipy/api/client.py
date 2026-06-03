@@ -51,6 +51,19 @@ logger = logging.getLogger(__name__)
 
 MAX_BARS_PER_REQUEST = 1000
 
+PROJECTX_STATUS_OPEN = 1
+PROJECTX_STATUS_FILLED = 2
+PROJECTX_STATUS_CANCELLED = 3
+PROJECTX_STATUS_EXPIRED = 4
+PROJECTX_STATUS_REJECTED = 5
+PROJECTX_STATUS_PENDING = 6
+PROJECTX_LIVE_ORDER_STATUSES = {PROJECTX_STATUS_OPEN, PROJECTX_STATUS_PENDING}
+PROJECTX_CONFIRMED_TERMINAL_STATUSES = {
+    PROJECTX_STATUS_CANCELLED,
+    PROJECTX_STATUS_EXPIRED,
+    PROJECTX_STATUS_REJECTED,
+}
+
 # REMOVED: Standalone _perform_initial_authentication(self) function.
 # The APIClient constructor now expects an initial token.
 # Re-authentication is handled by _perform_re_authentication_internal.
@@ -544,16 +557,194 @@ class APIClient:
         except Exception as e_generic: logger.error(f"Err place_order: {e_generic}"); raise APIError(f"Err: {e_generic}")
 
     def cancel_order(self, account_id: int, order_id: int) -> schemas.CancelOrderResponse:
+        """Returns endpoint acknowledgement, NOT broker-state confirmation.
+
+        Do NOT use as cancellation proof for certification or write-path safety.
+        Use cancel_order_with_confirmation().
+        """
         response_dict: Optional[Dict[str,Any]] = None
         try:
             request_model = schemas.CancelOrderRequest(accountId=account_id, orderId=order_id)
             payload_dict = request_model.model_dump(by_alias=True)
+            # Legacy method: endpoint acknowledgement only, not broker-state confirmation.
             response_dict = self._post_request("/api/Order/cancel", payload_dict)
             return schemas.CancelOrderResponse.model_validate(response_dict)
         except ValidationError as e_val:
             raise APIResponseParsingError(f"Failed to parse CancelOrderResponse: {e_val}", raw_response_text=str(response_dict)) from e_val
         except APIError: raise
         except Exception as e_generic: logger.error(f"Err cancel_order: {e_generic}"); raise APIError(f"Err: {e_generic}")
+
+    def search_open_orders(self, account_id: int) -> List[schemas.OrderDetails]:
+        response_dict: Optional[Dict[str, Any]] = None
+        try:
+            request_model = schemas.SearchOpenOrdersRequest(accountId=account_id)
+            payload_dict = request_model.model_dump(by_alias=True)
+            response_dict = self._post_request("/api/Order/searchOpen", payload_dict)
+            response_model = schemas.SearchOpenOrdersResponse.model_validate(response_dict)
+            return response_model.orders
+        except ValidationError as e_val:
+            raise APIResponseParsingError(f"Failed to parse SearchOpenOrdersResponse: {e_val}", raw_response_text=str(response_dict)) from e_val
+        except APIError:
+            raise
+        except Exception as e_generic:
+            logger.error(f"Err search_open_orders: {e_generic}")
+            raise APIError(f"Err: {e_generic}")
+
+    def cancel_order_with_confirmation(
+        self,
+        account_id: int,
+        order_id: int,
+        search_start_timestamp_iso: str,
+        search_end_timestamp_iso: Optional[str] = None,
+    ) -> schemas.CancelResult:
+        """Cancel an order and confirm broker state by REST read-back."""
+        cancel_response: Optional[schemas.CancelOrderResponse] = None
+        try:
+            cancel_response = self.cancel_order(account_id=account_id, order_id=order_id)
+        except (APITimeoutError, APIResponseParsingError) as exc:
+            return self._cancel_result(
+                schemas.CancelState.UNCONFIRMED,
+                account_id,
+                order_id,
+                "cancel request may have reached broker, but response was not confirmed",
+                error=str(exc),
+            )
+        except InvalidParameterError as exc:
+            return self._cancel_result(
+                schemas.CancelState.FAILED,
+                account_id,
+                order_id,
+                "cancel request rejected before broker-state confirmation",
+                error=str(exc),
+            )
+        except APIError as exc:
+            return self._cancel_result(
+                schemas.CancelState.FAILED,
+                account_id,
+                order_id,
+                "cancel endpoint rejected the request",
+                error=str(exc),
+            )
+
+        try:
+            open_orders = self.search_open_orders(account_id=account_id)
+            open_match = self._find_order(open_orders, order_id)
+            if open_match is not None:
+                status = getattr(open_match, "status", None)
+                if status == PROJECTX_STATUS_FILLED:
+                    return self._cancel_result(
+                        schemas.CancelState.RACE_LOST_FILLED,
+                        account_id,
+                        order_id,
+                        "read-back shows order filled before cancellation was confirmed",
+                        cancel_response=cancel_response,
+                        readback_source="searchOpen",
+                        readback_order_status=status,
+                    )
+                return self._cancel_result(
+                    schemas.CancelState.FAILED,
+                    account_id,
+                    order_id,
+                    "read-back shows order still open/live after cancel acknowledgement",
+                    cancel_response=cancel_response,
+                    readback_source="searchOpen",
+                    readback_order_status=status,
+                )
+
+            searched_orders = self.search_orders(
+                account_id=account_id,
+                start_timestamp_iso=search_start_timestamp_iso,
+                end_timestamp_iso=search_end_timestamp_iso,
+            )
+            searched_match = self._find_order(searched_orders, order_id)
+            if searched_match is None:
+                return self._cancel_result(
+                    schemas.CancelState.CONFIRMED,
+                    account_id,
+                    order_id,
+                    "order absent from searchOpen and bounded order search",
+                    cancel_response=cancel_response,
+                    readback_source="searchOpen+search",
+                )
+
+            status = getattr(searched_match, "status", None)
+            if status == PROJECTX_STATUS_FILLED:
+                return self._cancel_result(
+                    schemas.CancelState.RACE_LOST_FILLED,
+                    account_id,
+                    order_id,
+                    "read-back shows order filled before cancellation was confirmed",
+                    cancel_response=cancel_response,
+                    readback_source="search",
+                    readback_order_status=status,
+                )
+            if status in PROJECTX_CONFIRMED_TERMINAL_STATUSES:
+                return self._cancel_result(
+                    schemas.CancelState.CONFIRMED,
+                    account_id,
+                    order_id,
+                    "read-back shows terminal non-filled order status",
+                    cancel_response=cancel_response,
+                    readback_source="search",
+                    readback_order_status=status,
+                )
+            if status in PROJECTX_LIVE_ORDER_STATUSES:
+                return self._cancel_result(
+                    schemas.CancelState.FAILED,
+                    account_id,
+                    order_id,
+                    "read-back shows order still live after cancel acknowledgement",
+                    cancel_response=cancel_response,
+                    readback_source="search",
+                    readback_order_status=status,
+                )
+            return self._cancel_result(
+                schemas.CancelState.UNCONFIRMED,
+                account_id,
+                order_id,
+                "read-back returned an ambiguous order status",
+                cancel_response=cancel_response,
+                readback_source="search",
+                readback_order_status=status,
+            )
+        except (APITimeoutError, APIResponseParsingError, APIError) as exc:
+            return self._cancel_result(
+                schemas.CancelState.UNCONFIRMED,
+                account_id,
+                order_id,
+                "cancel acknowledged, but read-back confirmation failed",
+                cancel_response=cancel_response,
+                error=str(exc),
+            )
+
+    @staticmethod
+    def _find_order(orders: List[schemas.OrderDetails], order_id: int) -> Optional[schemas.OrderDetails]:
+        for order in orders:
+            if getattr(order, "id", None) == order_id:
+                return order
+        return None
+
+    @staticmethod
+    def _cancel_result(
+        state: schemas.CancelState,
+        account_id: int,
+        order_id: int,
+        reason: str,
+        cancel_response: Optional[schemas.CancelOrderResponse] = None,
+        readback_source: Optional[str] = None,
+        readback_order_status: Optional[int] = None,
+        error: Optional[str] = None,
+    ) -> schemas.CancelResult:
+        return schemas.CancelResult(
+            state=state,
+            account_id=account_id,
+            order_id=order_id,
+            cancel_response=cancel_response,
+            readback_source=readback_source,
+            readback_order_status=readback_order_status,
+            reason=reason,
+            error=error,
+        )
 
     def modify_order(self, modification_request_model: schemas.ModifyOrderRequest) -> schemas.ModifyOrderResponse:
         if not isinstance(modification_request_model, schemas.ModifyOrderRequest):

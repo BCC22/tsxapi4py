@@ -219,13 +219,17 @@ class OrderPlacer:
 
     def cancel_order(self, order_id: int) -> bool:
         """Cancels an existing open order.
-        (Docstring as provided)
+
+        Returns endpoint acknowledgement, NOT broker-state confirmation. Do NOT
+        use as cancellation proof for certification or write-path safety. Use
+        cancel_order_with_confirmation().
         """
         if not isinstance(order_id, int) or order_id <= 0:
             logger.error(f"Invalid order_id for cancellation: {order_id}. Must be a positive integer.")
             return False
         try:
             logger.info(f"Attempting to cancel order ID: {order_id} on account {self.account_id}")
+            # Legacy method: endpoint acknowledgement only, not broker-state confirmation.
             response_model: schemas.CancelOrderResponse = self.api_client.cancel_order(
                 account_id=self.account_id, order_id=order_id
             )
@@ -247,6 +251,36 @@ class OrderPlacer:
         except Exception as e_cancel: 
             logger.error(f"[CANCEL UNEXPECTED ERROR] Failed for order ID {order_id}: {e_cancel}", exc_info=True)
             return False
+
+    def cancel_order_with_confirmation(
+        self,
+        order_id: int,
+        search_window_minutes: int = 60,
+    ) -> schemas.CancelResult:
+        """Cancel an order and require REST read-back before reporting confirmation."""
+        if not isinstance(order_id, int) or order_id <= 0:
+            return schemas.CancelResult(
+                state=schemas.CancelState.FAILED,
+                account_id=self.account_id,
+                order_id=order_id,
+                reason="invalid order_id for cancellation",
+            )
+        if not isinstance(search_window_minutes, int) or search_window_minutes <= 0:
+            return schemas.CancelResult(
+                state=schemas.CancelState.FAILED,
+                account_id=self.account_id,
+                order_id=order_id,
+                reason="search_window_minutes must be a positive integer",
+            )
+
+        end_time_utc = datetime.now(UTC_TZ)
+        start_time_utc = end_time_utc - timedelta(minutes=search_window_minutes)
+        return self.api_client.cancel_order_with_confirmation(
+            account_id=self.account_id,
+            order_id=order_id,
+            search_start_timestamp_iso=start_time_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            search_end_timestamp_iso=end_time_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
 
     def modify_order(self, order_id: int,
                      new_size: Optional[int] = None,

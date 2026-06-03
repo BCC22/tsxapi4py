@@ -3,6 +3,7 @@
 Pydantic models for API request payloads and response structures.
 """
 from datetime import datetime
+from enum import Enum
 from typing import List, Optional, Any, Dict, Union, Literal # Literal is already imported
 from pydantic import BaseModel, Field, validator, model_validator # validator is V1, field_validator for V2 field specific
 
@@ -162,6 +163,24 @@ class CancelOrderRequest(BaseRequestModel):
 class CancelOrderResponse(BaseResponseModel): 
     pass
 
+class CancelState(str, Enum):
+    """State model for broker-state-confirmed cancellation results."""
+    CONFIRMED = "CANCEL_CONFIRMED"
+    UNCONFIRMED = "CANCEL_UNCONFIRMED"
+    FAILED = "CANCEL_FAILED"
+    RACE_LOST_FILLED = "CANCEL_RACE_LOST_FILLED"
+
+class CancelResult(BaseModel):
+    """Cancellation outcome where state is the only safety decision field."""
+    state: CancelState
+    order_id: int
+    account_id: int
+    cancel_response: Optional[CancelOrderResponse] = None
+    readback_source: Optional[str] = None
+    readback_order_status: Optional[int] = None
+    reason: str
+    error: Optional[str] = None
+
 class ModifyOrderRequest(BaseRequestModel):
     account_id: int = Field(..., alias="accountId")
     order_id: int = Field(..., alias="orderId") 
@@ -187,6 +206,9 @@ class OrderSearchRequest(BaseRequestModel):
     start_timestamp: str = Field(..., alias="startTimestamp") 
     end_timestamp: Optional[str] = Field(None, alias="endTimestamp") 
 
+class SearchOpenOrdersRequest(BaseRequestModel):
+    account_id: int = Field(..., alias="accountId")
+
 class OrderDetails(BaseModel): 
     id: int
     status: Optional[int] = None 
@@ -206,6 +228,9 @@ class OrderDetails(BaseModel):
         populate_by_name = True
 
 class OrderSearchResponse(BaseResponseModel):
+    orders: List[OrderDetails] = []
+
+class SearchOpenOrdersResponse(BaseResponseModel):
     orders: List[OrderDetails] = []
 
 
