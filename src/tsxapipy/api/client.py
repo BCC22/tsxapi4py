@@ -574,12 +574,29 @@ class APIClient:
         except APIError: raise
         except Exception as e_generic: logger.error(f"Err cancel_order: {e_generic}"); raise APIError(f"Err: {e_generic}")
 
-    def search_open_orders(self, account_id: int) -> List[schemas.OrderDetails]:
+    def search_open_orders_raw(self, account_id: int) -> Dict[str, Any]:
+        """Return raw /api/Order/searchOpen JSON before model normalization."""
         response_dict: Optional[Dict[str, Any]] = None
         try:
             request_model = schemas.SearchOpenOrdersRequest(accountId=account_id)
             payload_dict = request_model.model_dump(by_alias=True)
             response_dict = self._post_request("/api/Order/searchOpen", payload_dict)
+            if not isinstance(response_dict, dict):
+                raise APIResponseParsingError(
+                    "Failed to parse raw SearchOpenOrdersResponse: response was not a JSON object",
+                    raw_response_text=str(response_dict),
+                )
+            return response_dict
+        except APIError:
+            raise
+        except Exception as e_generic:
+            logger.error(f"Err search_open_orders_raw: {e_generic}")
+            raise APIError(f"Err: {e_generic}")
+
+    def search_open_orders(self, account_id: int) -> List[schemas.OrderDetails]:
+        response_dict: Optional[Dict[str, Any]] = None
+        try:
+            response_dict = self.search_open_orders_raw(account_id)
             response_model = schemas.SearchOpenOrdersResponse.model_validate(response_dict)
             return response_model.orders
         except ValidationError as e_val:

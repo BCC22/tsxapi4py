@@ -190,6 +190,77 @@ def test_search_open_orders_response_parsing_present():
     assert orders[0].status == 1
 
 
+def test_search_open_orders_raw_preserves_custom_tag_and_full_field_set():
+    client = _client()
+    raw_payload = {
+        "orders": [
+            {
+                "id": ORDER_ID,
+                "status": 1,
+                "customTag": "MMF-WP1-unit-test",
+                "brokerOnlyField": {"nested": True},
+            }
+        ],
+        "success": True,
+        "errorCode": 0,
+        "errorMessage": None,
+        "topLevelBrokerField": "preserved",
+    }
+    client._post_request = Mock(return_value=raw_payload)
+
+    raw = client.search_open_orders_raw(ACCOUNT_ID)
+
+    assert raw is raw_payload
+    assert raw["orders"][0]["customTag"] == "MMF-WP1-unit-test"
+    assert raw["orders"][0]["brokerOnlyField"] == {"nested": True}
+    assert raw["topLevelBrokerField"] == "preserved"
+    assert client._post_request.call_args.args[0] == "/api/Order/searchOpen"
+    assert client._post_request.call_args.args[1] == {"accountId": ACCOUNT_ID}
+
+
+def test_search_open_orders_contract_unchanged_when_raw_contains_custom_tag():
+    client = _client()
+    client._post_request = Mock(
+        return_value={
+            "orders": [{"id": ORDER_ID, "status": 1, "customTag": "MMF-WP1-unit-test"}],
+            "success": True,
+            "errorCode": 0,
+            "errorMessage": None,
+        }
+    )
+
+    orders = client.search_open_orders(ACCOUNT_ID)
+
+    assert len(orders) == 1
+    assert isinstance(orders[0], schemas.OrderDetails)
+    assert orders[0].id == ORDER_ID
+    assert orders[0].status == 1
+    assert not hasattr(orders[0], "custom_tag")
+
+
+def test_search_open_orders_raw_preserves_absent_orders_key():
+    client = _client()
+    raw_payload = {"success": True, "errorCode": 0, "errorMessage": None}
+    client._post_request = Mock(return_value=raw_payload)
+
+    raw = client.search_open_orders_raw(ACCOUNT_ID)
+
+    assert raw is raw_payload
+    assert "orders" not in raw
+
+
+def test_search_open_orders_raw_malformed_non_object_fails_closed():
+    client = _client()
+    client._post_request = Mock(return_value=["not", "an", "object"])
+
+    try:
+        client.search_open_orders_raw(ACCOUNT_ID)
+    except APIResponseParsingError as exc:
+        assert "raw SearchOpenOrdersResponse" in str(exc)
+    else:
+        raise AssertionError("expected parsing error")
+
+
 def test_search_open_orders_response_parsing_error():
     client = _client()
     client._post_request = Mock(return_value={"orders": [{"id": "bad"}], "success": True})
