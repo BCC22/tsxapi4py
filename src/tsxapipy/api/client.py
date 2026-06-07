@@ -505,6 +505,25 @@ class APIClient:
         except APIError: raise
         except Exception as e_generic: logger.error(f"Err get_accounts: {e_generic}"); raise APIError(f"Err: {e_generic}")
 
+    def search_contracts_raw(self, search_text: str, live: bool = False) -> Dict[str, Any]:
+        """Return raw /api/Contract/search JSON before model normalization."""
+        response_dict: Optional[Dict[str, Any]] = None
+        try:
+            request_model = schemas.ContractSearchRequest(searchText=search_text, live=live)
+            payload_dict = request_model.model_dump(by_alias=True)
+            response_dict = self._post_request("/api/Contract/search", payload_dict)
+            if not isinstance(response_dict, dict):
+                raise APIResponseParsingError(
+                    "Failed to parse raw ContractSearchResponse: response was not a JSON object",
+                    raw_response_text=str(response_dict),
+                )
+            return response_dict
+        except APIError:
+            raise
+        except Exception as e_generic:
+            logger.error(f"Err search_contracts_raw: {e_generic}")
+            raise APIError(f"Err: {e_generic}")
+
     def search_contracts(self, search_text: str, live: bool = False) -> List[schemas.Contract]:
         response_dict: Optional[Dict[str,Any]] = None
         try:
